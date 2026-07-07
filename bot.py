@@ -12,7 +12,6 @@ import asyncio
 import json
 import os
 import re
-import base64
 from typing import Optional, Union, List
 import aiohttp
 from collections import defaultdict
@@ -26,93 +25,11 @@ from moderation import Moderation
 # Объявление command_state
 command_state = {}
 
-class CloseTicketModal(discord.ui.Modal, title="Закрыть обращение"):
-    def __init__(self):
-        super().__init__()
-        self.reason = discord.ui.TextInput(
-            label="Причина",
-            style=discord.TextStyle.long,
-            placeholder="Причина для закрытия обращения, например, 'Решено'",
-            required=True,
-            max_length=1024
-        )
-        self.add_item(self.reason)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            # Получаем данные о тикете из базы данных
-            conn = sqlite3.connect('lawyers.db')
-            cursor = conn.cursor()
-            
-            # Получаем информацию о клиенте и адвокате
-            cursor.execute("""
-                SELECT client_name, client_tag, lawyer_tag
-                FROM help_data 
-                WHERE channel_id = ?
-            """, (str(interaction.channel.id),))
-            
-            result = cursor.fetchone()
-            conn.close()
-
-            if result:
-                client_name, client_tag, lawyer_tag = result
-                print(f"Данные для отзыва: client_name={client_name}, client_tag={client_tag}, lawyer_tag={lawyer_tag}")
-
-                # Убеждаемся, что у нас есть тег клиента
-                if not client_tag or not client_tag.startswith('<@'):
-                    if interaction.channel.members:
-                        # Ищем участника канала, который не является ботом и не является адвокатом
-                        client_member = next(
-                            (member for member in interaction.channel.members 
-                             if not member.bot and not any(role.id == LAWYER_ROLE_ID for role in member.roles)),
-                            None
-                        )
-                        if client_member:
-                            client_tag = client_member.mention
-                            print(f"Найден тег клиента из канала: {client_tag}")
-
-                # Отправляем запрос на отзыв
-                await send_review_request(
-                    interaction.guild,
-                    lawyer_tag or "Адвокат не назначен",
-                    client_tag or f"<@{client_name}>" if client_name.isdigit() else client_tag or client_name
-                )
-            else:
-                print(f"❌ Ошибка: Данные о тикете не найдены для канала {interaction.channel.id}")
-
-            # Проверяем, не является ли канал основным каналом тикетов
-            if interaction.channel.id == 1399117597450043422:
-                await interaction.response.send_message(
-                    "❌ Нельзя закрыть основной канал тикетов!",
-                    ephemeral=True
-                )
-                return
-
-            # Отправляем подтверждение
-            await interaction.response.send_message(
-                f"Обращение закрыто по причине: {self.reason.value}",
-                ephemeral=True
-            )
-
-            # Удаляем канал через небольшую задержку, только если это не основной канал тикетов
-            if interaction.channel.category_id == TICKET_CATEGORY_ID:
-                await asyncio.sleep(2)
-                # Удаляем только каналы из категории тикетов
-                await interaction.channel.delete(reason=f"Закрыто управляющим: {interaction.user}")
-                print(f"✅ Канал {interaction.channel.name} удален из категории тикетов")
-
-        except Exception as e:
-            print(f"Ошибка при закрытии тикета: {e}")
-            await interaction.response.send_message(
-                "Произошла ошибка при закрытии тикета.",
-                ephemeral=True
-            )
-
 TICKET_CATEGORY_ID = 1379559023124156602
-PAYMENT_CATEGORY_ID = 1379559023124156602
-LAWYER_ROLE_ID = 1391399383441997866
+PAYMENT_CATEGORY_ID = 1379612318903697448
+LAWYER_ROLE_ID = 1379548122111545354
 MOD_ROLE_IDS = [1379547784717402152, 1379547989680324750]
-CHANNEL_ID = 1516302913205440512
+CHANNEL_ID = 1386688215356018750
 LOG_CHANNEL_ID = 1379613135631290459  # Замените на ID вашего канала логов
 
 
@@ -166,8 +83,6 @@ class LawyerBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # Добавляем постоянные view при запуске бота
-        self.add_view(MacroButtons())
         # Загружаем коги при запуске бота
         await self.add_cog(Logs(self))
         await self.add_cog(Moderation(self))
@@ -899,14 +814,6 @@ async def generate_help_docs(
         template2_path: str = "help2.png"
 ):
     print(f"Команда 'помощь' вызвана пользователем {interaction.user.name} в канале {interaction.channel_id}")
-    
-    # Получаем данные адвоката из базы данных для макроса
-    lawyer = get_lawyer(str(interaction.user.id))
-    if not lawyer:
-        await interaction.response.send_message("Ошибка: данные адвоката не найдены в базе данных.", ephemeral=True)
-        return
-
-    lawyer_email = lawyer[3]  # Email находится в четвертой колонке
 
     def draw_centered_text(draw, text, y_position, font, image_width, line_spacing=15):
         """Функция для рисования центрированного текста с переносами"""
@@ -1122,35 +1029,16 @@ async def generate_help_docs(
                 image_binary2.seek(0)
                 file2 = discord.File(fp=image_binary2, filename='help_doc2.png')
 
-                # Отправляем файлы
                 await interaction.edit_original_response(attachments=[file1, file2])
-                
-                # Создаем представление с кнопками для макросов
-                macro_view = MacroButtons()
-
-                # Создаем и отправляем эмбед с инструкцией для создания макроса
-                macro_embed = discord.Embed(
-                    title="📝 Создание макроса DataBase",
-                    description="Нажмите на кнопку ниже, чтобы создать макрос. После этого введите номер паспорта или никнейм игрока.",
-                    color=discord.Color.blue()
-                )
-                macro_embed.add_field(
-                    name="Инструкция",
-                    value="1. Нажмите на кнопку 'Создать макрос на DataBase'\n2. Введите НИК или НОМЕР ПАСПОРТА игрока\n3. Готовый макрос будет отправлен в личном сообщении",
-                    inline=False
-                )
-                macro_embed.set_footer(text="PACT Attorney")
-                macro_embed.timestamp = datetime.now()
-
-                # Отправляем эмбед с кнопками
-                await interaction.channel.send(embed=macro_embed, view=macro_view)
 
     except Exception as e:
         print(f"[ОШИБКА /помощь]: {e}")
         try:
             await interaction.followup.send("Произошла ошибка при выполнении команды.", ephemeral=True)
         except discord.errors.InteractionResponded:
-            pass  # уже подтверждено, ничего не делаем@bot.event
+            pass  # уже подтверждено, ничего не делаем
+
+@bot.event
 async def on_guild_channel_delete(channel):
     """Очищает базу данных при удалении канала"""
     conn = sqlite3.connect('lawyers.db')
@@ -1246,357 +1134,7 @@ class TakeTicketView(ui.View):
 
 
 # ========== ПЛАТЕЖНЫЕ ТИКЕТЫ ==========
-
-class MacroButtons(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Создать макрос на DataBase", style=discord.ButtonStyle.primary, custom_id="persistent_create_database_macro")
-    async def create_database_macro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Проверяем наличие роли адвоката
-        if not any(role.id == 1379548122111545354 for role in interaction.user.roles):
-            await interaction.response.send_message("Вы должны иметь роль адвоката для использования этой кнопки.", ephemeral=True)
-            return
-
-        # Получаем данные адвоката из базы данных
-        lawyer = get_lawyer(str(interaction.user.id))
-        if not lawyer:
-            await interaction.response.send_message("Ошибка: ваши данные не найдены в базе данных адвокатов.", ephemeral=True)
-            return
-
-        lawyer_email = lawyer[3]  # Email находится в четвертой колонке
-
-        # Отправляем инструкцию для ввода
-        instruction_embed = discord.Embed(
-            title="📝 Создание макроса DataBase",
-            description="Введите номер паспорта или никнейм игрока для создания макроса.",
-            color=discord.Color.blue()
-        )
-        await interaction.response.send_message(embed=instruction_embed, ephemeral=True)
-        
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-        
-        try:
-            # Ждем сообщение от пользователя
-            response = await interaction.client.wait_for('message', timeout=300.0, check=check)
-            player_data = response.content
-
-            # Удаляем сообщение пользователя
-            try:
-                await response.delete()
-            except:
-                pass
-
-            # Создаем красивый эмбед для макроса
-            macro_embed = discord.Embed(
-                title="🔐 Макрос DataBase готов",
-                description="Скопируйте код ниже:",
-                color=discord.Color.green()
-            )
-            macro_embed.set_author(
-                name=interaction.user.display_name,
-                icon_url=interaction.user.display_avatar.url
-            )
-
-            # Создаем макрос
-            macro_data = [
-                "Получение database.gov",
-                [
-                    {"id": "chat_rp_me", "params": [f"достал телефон, открыл database.gov и ввел в поиск: {player_data}"]},
-                    {"id": "chat_rp_do", "params": ["На экране отобразилась информация о гражданине."]},
-                    {"id": "chat_rp_me", "params": [f"сделал скриншот и отправил на почту: {lawyer_email}@sa.com"]}
-                ]
-            ]
-
-            # Импортируем необходимые модули в начале файла
-            # Кодируем макрос в base64
-            # Используем глобальные импорты base64 и json
-            encoded_json = json.dumps(macro_data, ensure_ascii=False).encode('utf-8')
-            macro_encoded = base64.b64encode(encoded_json).decode('utf-8')
-
-            # Добавляем макрос в эмбед
-            macro_embed.add_field(
-                name="Закодированный макрос",
-                value=f"```{macro_encoded}```",
-                inline=False
-            )
-            macro_embed.set_footer(text="PACT Attorney | DataBase Macro System")
-            macro_embed.timestamp = datetime.now()
-
-            # Отправляем макрос
-            await interaction.followup.send(embed=macro_embed, ephemeral=True)
-
-        except asyncio.TimeoutError:
-            error_embed = discord.Embed(
-                title="❌ Ошибка",
-                description="Время ожидания ответа истекло",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-        except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Ошибка",
-                description=f"Произошла ошибка при создании макроса: {e}",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-
-    @discord.ui.button(label="Получить макрос о кадровом аудите фракции", style=discord.ButtonStyle.success, custom_id="persistent_create_audit_macro")
-    async def create_audit_macro(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Проверяем наличие роли адвоката
-        if not any(role.id == 1379548122111545354 for role in interaction.user.roles):
-            await interaction.response.send_message("Вы должны иметь роль адвоката для использования этой кнопки.", ephemeral=True)
-            return
-
-        # Получаем данные адвоката из базы данных
-        lawyer = get_lawyer(str(interaction.user.id))
-        if not lawyer:
-            await interaction.response.send_message("Ошибка: ваши данные не найдены в базе данных адвокатов.", ephemeral=True)
-            return
-
-        lawyer_email = lawyer[3]
-
-        # Отправляем инструкцию для ввода
-        instruction_embed = discord.Embed(
-            title="📝 Создание макроса кадрового аудита",
-            description="Введите номер паспорта сотрудника для создания макроса.",
-            color=discord.Color.blue()
-        )
-        await interaction.response.send_message(embed=instruction_embed, ephemeral=True)
-        
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-        
-        try:
-            response = await interaction.client.wait_for('message', timeout=300.0, check=check)
-            passport = response.content
-
-            # Удаляем сообщение пользователя
-            try:
-                await response.delete()
-            except:
-                pass
-
-            # Создаем красивый эмбед для макроса
-            macro_embed = discord.Embed(
-                title="🔐 Макрос кадрового аудита готов",
-                description="Скопируйте код ниже:",
-                color=discord.Color.green()
-            )
-            macro_embed.set_author(
-                name=interaction.user.display_name,
-                icon_url=interaction.user.display_avatar.url
-            )
-
-            # Создаем макрос для кадрового аудита
-            macro_data = [
-                "Кадровый аудит фракции",
-                [
-                    {"id": "chat_rp_me", "params": ["достал и включил планшет"]},
-                    {"id": "chat_rp_me", "params": ["открыл кадровый аудит фракции"]},
-                    {"id": "chat_rp_me", "params": [f'вписал в поле "Действие": {passport}']},
-                    {"id": "chat_rp_do", "params": ["В экране планшета отобразился результат."]},
-                    {"id": "chat_rp_me", "params": [f"сохранил результат и отправил на почту: {lawyer_email}@sa.com"]}
-                ]
-            ]
-
-            encoded_json = json.dumps(macro_data, ensure_ascii=False).encode('utf-8')
-            macro_encoded = base64.b64encode(encoded_json).decode('utf-8')
-
-            macro_embed.add_field(
-                name="Закодированный макрос",
-                value=f"```{macro_encoded}```",
-                inline=False
-            )
-            macro_embed.set_footer(text="PACT Attorney | Audit Macro System")
-            macro_embed.timestamp = datetime.now()
-
-            await interaction.followup.send(embed=macro_embed, ephemeral=True)
-
-        except asyncio.TimeoutError:
-            await interaction.followup.send("Время ожидания истекло.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
-
-# Классы для системы отзывов
-class ReviewModal(discord.ui.Modal, title="⭐ Отзыв о работе адвоката"):
-    def __init__(self, lawyer_tag: str, client_name: str):
-        super().__init__()
-        self.lawyer_tag = lawyer_tag
-        self.client_name = client_name
-        
-        self.rating = discord.ui.TextInput(
-            label="⭐ Оценка адвоката (от 1 до 5)",
-            placeholder="Введите число от 1 до 5 (где 5 - отлично, 1 - плохо)",
-            min_length=1,
-            max_length=1,
-            required=True,
-            style=discord.TextStyle.short
-        )
-        
-        self.review_text = discord.ui.TextInput(
-            label="📝 Опишите качество оказанных услуг",
-            placeholder="Расскажите о: \n- Профессионализме адвоката\n- Скорости работы\n- Качестве консультации\n- Общем впечатлении",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=2000  # Увеличили максимальную длину
-        )
-        
-        self.add_item(self.rating)
-        self.add_item(self.review_text)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            # Проверяем валидность оценки
-            try:
-                rating = int(self.rating.value)
-                if not 1 <= rating <= 5:
-                    await interaction.response.send_message("❌ Оценка должна быть от 1 до 5!", ephemeral=True)
-                    return
-            except ValueError:
-                await interaction.response.send_message("❌ Пожалуйста, введите число от 1 до 5!", ephemeral=True)
-                return
-
-            # Определяем цвет и эмодзи на основе рейтинга
-            rating_colors = {
-                5: (discord.Color.green(), "🌟"),
-                4: (discord.Color.blue(), "⭐"),
-                3: (discord.Color.gold(), "⚠️"),
-                2: (discord.Color.orange(), "⚠️"),
-                1: (discord.Color.red(), "❌")
-            }
-            embed_color, rating_emoji = rating_colors[rating]
-
-            # Создаем эмбед с отзывом
-            review_embed = discord.Embed(
-                title=f"{rating_emoji} Новый отзыв о работе адвоката",
-                color=embed_color,
-                timestamp=datetime.now()
-            )
-            
-            # Добавляем звездный рейтинг
-            stars = "⭐" * rating + "☆" * (5 - rating)
-            
-            review_embed.add_field(
-                name="Адвокат",
-                value=self.lawyer_tag,
-                inline=True
-            )
-            review_embed.add_field(
-                name="Клиент",
-                value=self.client_name,
-                inline=True
-            )
-            review_embed.add_field(
-                name="Оценка",
-                value=stars,
-                inline=False
-            )
-            review_embed.add_field(
-                name="Отзыв",
-                value=self.review_text.value,
-                inline=False
-            )
-            
-            # Отправляем отзыв в канал отзывов
-            review_channel = interaction.guild.get_channel(1392607447616720896)
-            if review_channel:
-                await review_channel.send(embed=review_embed)
-                await interaction.response.send_message("Спасибо за ваш отзыв!", ephemeral=True)
-            else:
-                await interaction.response.send_message("Ошибка: канал для отзывов не найден.", ephemeral=True)
-
-        except ValueError:
-            await interaction.response.send_message("Оценка должна быть числом от 1 до 5!", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Произошла ошибка при отправке отзыва: {e}", ephemeral=True)
-
-class ReviewButton(discord.ui.View):
-    def __init__(self, lawyer_tag: str, client_tag: str):
-        super().__init__(timeout=None)  # Важно: timeout=None для постоянной кнопки
-        self.lawyer_tag = lawyer_tag
-        self.client_tag = client_tag
-        
-        # Добавляем кнопку при инициализации
-        self.review_button = discord.ui.Button(
-            label="Оставить отзыв",
-            style=discord.ButtonStyle.primary,
-            custom_id="leave_review",
-            emoji="⭐"
-        )
-        self.review_button.callback = self.review_button_callback
-        self.add_item(self.review_button)
-
-    async def review_button_callback(self, interaction: discord.Interaction):
-        # Проверяем, является ли пользователь тем, кому предназначен отзыв
-        user_mention = interaction.user.mention
-        if not self.client_tag.startswith('<@'):
-            # Если client_tag не тег, то просто сравниваем имена
-            can_review = True  # Позволяем всем оставлять отзыв в этом случае
-        else:
-            # Если это тег, проверяем совпадение
-            can_review = user_mention == self.client_tag
-
-        if not can_review:
-            await interaction.response.send_message(
-                "❌ Только указанный клиент может оставить отзыв!",
-                ephemeral=True
-            )
-            return
-
-        try:
-            modal = ReviewModal(self.lawyer_tag, self.client_tag)
-            await interaction.response.send_modal(modal)
-            print(f"✅ Модальное окно отзыва отправлено для {self.client_tag}")
-        except Exception as e:
-            print(f"❌ Ошибка при отправке модального окна: {e}")
-            await interaction.response.send_message(
-                "Произошла ошибка при открытии формы отзыва. Попробуйте позже.",
-                ephemeral=True
-            )
-
-async def send_review_request(guild, lawyer_tag: str, client_tag: str):
-    """Отправляет запрос на отзыв в специальный канал"""
-    review_channel = guild.get_channel(1392607447616720896)
-    if not review_channel:
-        print(f"❌ Ошибка: Канал отзывов не найден (ID: 1392607447616720896)")
-        return
-
-    try:
-        # Создаем эмбед для запроса отзыва
-        embed = discord.Embed(
-            title="📊 Запрос отзыва",
-            description=f"Уважаемый {client_tag}, оставьте отзыв о работе адвоката {lawyer_tag}",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
-        embed.add_field(
-            name="⭐ Как оставить отзыв?",
-            value="1. Нажмите на кнопку 'Оставить отзыв' ниже\n2. В появившемся окне укажите оценку от 1 до 5\n3. Напишите свой отзыв о работе адвоката",
-            inline=False
-        )
-        embed.set_footer(text="PACT Attorney | Система отзывов")
-
-        # Создаем новую view с кнопкой для отзыва
-        view = ReviewButton(lawyer_tag, client_tag)
-        
-        # Отправляем сообщение с тегом клиента и кнопкой
-        message = await review_channel.send(
-            content=client_tag,
-            embed=embed,
-            view=view
-        )
-        print(f"✅ Запрос на отзыв успешно отправлен для {client_tag}")
-        
-        # Проверяем, что сообщение отправилось с кнопкой
-        if not message.components:
-            print("⚠️ Предупреждение: сообщение отправлено, но кнопка не отображается")
-            
-    except Exception as e:
-        print(f"❌ Ошибка при отправке запроса на отзыв: {e}")
-        print(f"Детали ошибки: {traceback.format_exc()}")
-
+# Класс для кнопки "Одобрить перевод"
 # Класс для кнопки "Одобрить перевод"
 class ApprovePaymentView(ui.View):
     def __init__(self):
@@ -2092,7 +1630,7 @@ class PaymentClientView(discord.ui.View):
             manager_embed.set_footer(text="Отправьте скриншот в ответ на это сообщение")
 
             # Отправляем уведомление управляющему
-            manager = await interaction.client.fetch_user(1068037217898995752)
+            manager = await interaction.client.fetch_user(719586288226926687)
             msg = await manager.send(embed=manager_embed)
             
             # Создаем новый embed для обновления сообщения в канале
@@ -2315,7 +1853,7 @@ async def pay(interaction: discord.Interaction, amount: str):
         manager_embed.add_field(name="Статус", value="⏳ Ожидает оплаты", inline=False)
 
         # Отправляем уведомление управляющему
-        manager = interaction.guild.get_member(1068037217898995752)  # ID управляющего
+        manager = interaction.guild.get_member(719586288226926687)  # ID управляющего
         if manager:
             try:
                 await manager.send(embed=manager_embed)
@@ -2352,7 +1890,7 @@ async def pay(interaction: discord.Interaction, amount: str):
 
 
 async def send_payment_reminders(original_msg, channel_id, lawyer_id, client_name, agreement_number, amount):
-    manager_id = 1068037217898995752
+    manager_id = 719586288226926687
     reminder_count = 0
     max_reminders = 15  # Максимальное количество напоминаний
     
@@ -2422,8 +1960,6 @@ async def update_lawyers_embed(bot, guild):
     if guild is None:
         print("Сервер не найден")
         return
-
-    await guild.chunk()
     print(f"DEBUG: Загружено {len(guild.members)} участников сервера.")
 
     embed = discord.Embed(title="Сотрудники Адвокатского бюро", color=0x00FF00)
@@ -2432,18 +1968,23 @@ async def update_lawyers_embed(bot, guild):
     managers_list = []
     manager_ids = set()
 
-    for member in guild.members:
+    for discord_id_str, lawyer in lawyer_dict.items():
+        member = guild.get_member(int(discord_id_str))
+
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(discord_id_str))
+            except discord.NotFound:
+                continue
+
         roles = [role.id for role in member.roles]
         is_manager = any(role_id in MOD_ROLE_IDS for role_id in roles)
-        member_id_str = str(member.id)
 
-        if is_manager and member_id_str in lawyer_dict:
-            lawyer = lawyer_dict[member_id_str]
-            managers_list.append(f"<@{member.id}> | {lawyer['name']} | Телефон: {lawyer['phone']}")
-            manager_ids.add(member_id_str)
-            print(f"DEBUG: {member.name} добавлен в управляющие.")
-        elif is_manager:
-            print(f"DEBUG: {member.name} имеет управляющую роль, но не зарегистрирован в базе.")
+        if is_manager:
+            managers_list.append(
+                f"<@{member.id}> | {lawyer['name']} | Телефон: {lawyer['phone']}"
+            )
+            manager_ids.add(discord_id_str)
 
     embed.add_field(
         name="Управляющие бюро",
@@ -2527,7 +2068,7 @@ async def add_lawyer_command(
 # Команда для отправки кнопки набора адвокатов
 @bot.tree.command(name="отправить_кнопку_набора", description="Отправить кнопки заявок")
 async def send_join_button(interaction: discord.Interaction):
-    channel = bot.get_channel(1379610180735467520)
+    channel = bot.get_channel(1516302913205440512)
 
     # Первое сообщение с кнопкой
     embed1 = discord.Embed(
@@ -2589,180 +2130,77 @@ async def delete_lawyer_command(interaction: discord.Interaction, passport: str)
     # Удаляем адвоката из базы данных
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM lawyers WHERE passport = ?", (passport,))
+
+    # Получаем данные адвоката
+    cursor.execute(
+        "SELECT discord_id FROM lawyers WHERE passport = ?",
+        (passport,)
+    )
+    lawyer = cursor.fetchone()
+
+    if not lawyer:
+        conn.close()
+        await interaction.response.send_message(
+            "Адвокат не найден.",
+            ephemeral=True
+        )
+        return
+
+    discord_id = int(lawyer["discord_id"])
+
+    # Получаем участника
+    member = interaction.guild.get_member(discord_id)
+
+    # Забираем роль адвоката
+    if member:
+        lawyer_role = interaction.guild.get_role(LAWYER_ROLE_ID)
+
+        if lawyer_role and lawyer_role in member.roles:
+            await member.remove_roles(
+                lawyer_role,
+                reason=f"Уволен через /удалить_адвоката"
+            )
+
+    # Ищем обращения этого адвоката
+    cursor.execute(
+        "SELECT channel_id FROM tickets WHERE lawyer_id = ?",
+        (str(discord_id),)
+    )
+    tickets = cursor.fetchall()
+
+    # Удаляем доступ к обращениям
+    if member:
+        for ticket in tickets:
+            channel = interaction.guild.get_channel(ticket["channel_id"])
+
+            if channel:
+                try:
+                    await channel.set_permissions(
+                        member,
+                        overwrite=None
+                    )
+                except Exception as e:
+                    print(
+                        f"Ошибка удаления доступа из "
+                        f"{channel.name}: {e}"
+                    )
+
+    # Удаляем адвоката из БД
+    cursor.execute(
+        "DELETE FROM lawyers WHERE passport = ?",
+        (passport,)
+    )
+
     conn.commit()
     conn.close()
 
-    await interaction.response.send_message(f"Адвокат с паспортом {passport} успешно удален.", ephemeral=True)
+    await interaction.response.send_message(
+        f"Адвокат с паспортом {passport} успешно удален.",
+        ephemeral=True
+    )
+
     await update_lawyers_embed(bot, interaction.guild)
 
-
-# Команда для получения всех соглашений
-@bot.tree.command(name="получить_все_соглашения", description="Получить список всех соглашений")
-async def get_all_agreements(interaction: discord.Interaction):
-    # Проверка роли
-    if not any(role.id in MOD_ROLE_IDS for role in interaction.user.roles):
-        await interaction.response.send_message("Только модераторы могут просматривать все соглашения.", ephemeral=True)
-        return
-
-    # Получаем все соглашения из базы данных
-    conn = sqlite3.connect('lawyers.db')
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT h.agreement_number, h.client_name, h.client_passport, h.client_tag, h.lawyer_tag, h.channel_id
-        FROM help_data h
-        ORDER BY h.agreement_number
-    """)
-    agreements = cursor.fetchall()
-    conn.close()
-
-    if not agreements:
-        await interaction.response.send_message("В базе данных нет соглашений.", ephemeral=True)
-        return
-
-    # Создаем эмбеды для списка соглашений (максимум 25 полей в одном эмбеде)
-    embeds = []
-    current_embed = discord.Embed(
-        title="📑 Список всех соглашений",
-        color=discord.Color.blue(),
-        timestamp=datetime.now()
-    )
-    field_count = 0
-
-    for agreement in agreements:
-        agreement_number, client_name, client_passport, client_tag, lawyer_tag, channel_id = agreement
-        
-        # Формируем значение поля
-        field_value = []
-        if channel_id:
-            field_value.append(f"📎 Канал: <#{channel_id}>")
-        if client_passport:
-            field_value.append(f"🎫 Паспорт клиента: {client_passport}")
-        if client_tag and not client_tag.startswith("<@None"):
-            field_value.append(f"👤 Клиент Discord: {client_tag}")
-        if lawyer_tag and not lawyer_tag.startswith("<@None"):
-            field_value.append(f"⚖️ Адвокат: {lawyer_tag}")
-
-        # Добавляем поле в эмбед
-        current_embed.add_field(
-            name=f"Соглашение №{agreement_number} | {client_name}",
-            value="\n".join(field_value) or "Нет дополнительной информации",
-            inline=False
-        )
-        field_count += 1
-
-        # Если достигли лимита полей, создаем новый эмбед
-        if field_count == 25:
-            embeds.append(current_embed)
-            current_embed = discord.Embed(
-                title="📑 Список всех соглашений (продолжение)",
-                color=discord.Color.blue(),
-                timestamp=datetime.now()
-            )
-            field_count = 0
-
-    # Добавляем последний эмбед, если в нем есть поля
-    if field_count > 0:
-        embeds.append(current_embed)
-
-    # Отправляем все эмбеды
-    for embed in embeds:
-        await interaction.followup.send(embed=embed) if embeds.index(embed) > 0 else await interaction.response.send_message(embed=embed)
-
-# Команда для редактирования базы клиентов
-@bot.tree.command(name="edit_client_baza", description="Редактировать данные клиента в базе")
-async def edit_client_database(interaction: discord.Interaction):
-    # Проверка роли
-    if not any(role.id in MOD_ROLE_IDS for role in interaction.user.roles):
-        await interaction.response.send_message("Только модераторы могут изменять данные клиентов.", ephemeral=True)
-        return
-
-    # Получаем список всех клиентов
-    conn = sqlite3.connect('lawyers.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT agreement_number, client_name, client_passport FROM help_data")
-    clients = cursor.fetchall()
-    conn.close()
-
-    if not clients:
-        await interaction.response.send_message("В базе данных нет клиентов.", ephemeral=True)
-        return
-
-    # Создаем выбор клиента
-    options = [discord.SelectOption(
-        label=f"{client_name[:50]}... (№{agreement_number})" if len(client_name) > 50 else f"{client_name} (№{agreement_number})",
-        description=f"Паспорт: {client_passport}" if client_passport else "Паспорт не указан",
-        value=agreement_number
-    ) for agreement_number, client_name, client_passport in clients]
-
-    select = discord.ui.Select(placeholder="Выберите клиента", options=options)
-
-    # Создаем View для первого меню
-    view = discord.ui.View()
-    view.add_item(select)
-
-    async def select_callback(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        agreement_number = select.values[0]
-
-        data_select = discord.ui.Select(
-            placeholder="Выберите что изменить",
-            options=[
-                discord.SelectOption(label="Имя клиента", value="client_name"),
-                discord.SelectOption(label="Паспорт клиента", value="client_passport"),
-                discord.SelectOption(label="Тег клиента", value="client_tag"),
-                discord.SelectOption(label="Тег адвоката", value="lawyer_tag")
-            ]
-        )
-
-        async def data_callback(interaction: discord.Interaction):
-            field = data_select.values[0]
-            modal = EditClientModal(field=field, agreement_number=agreement_number)
-            await interaction.response.send_modal(modal)
-
-        data_select.callback = data_callback
-        data_view = discord.ui.View()
-        data_view.add_item(data_select)
-        await interaction.followup.send("Выберите поле для изменения:", view=data_view, ephemeral=True)
-
-    select.callback = select_callback
-    await interaction.response.send_message("Выберите клиента для редактирования:", view=view, ephemeral=True)
-
-class EditClientModal(discord.ui.Modal):
-    def __init__(self, field: str, agreement_number: str):
-        super().__init__(title=f"Изменение данных клиента")
-        self.field = field
-        self.agreement_number = agreement_number
-        self.new_value = discord.ui.TextInput(
-            label=f"Новое значение",
-            style=discord.TextStyle.short,
-            required=True
-        )
-        self.add_item(self.new_value)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            conn = sqlite3.connect('lawyers.db')
-            cursor = conn.cursor()
-            cursor.execute(
-                f"UPDATE help_data SET {self.field} = ? WHERE agreement_number = ?",
-                (self.new_value.value, self.agreement_number)
-            )
-            conn.commit()
-            conn.close()
-
-            await interaction.response.send_message(
-                f"Данные клиента успешно обновлены!",
-                ephemeral=True
-            )
-            
-            # Обновляем реестр клиентов
-            asyncio.create_task(update_client_registry(bot))
-        except Exception as e:
-            await interaction.response.send_message(
-                f"Произошла ошибка при обновлении данных: {e}",
-                ephemeral=True
-            )
 
 # Команда /изменить_данные_адвоката
 @bot.tree.command(name="изменить_данные_адвоката", description="Изменить данные адвоката")
@@ -2785,8 +2223,8 @@ async def update_lawyer_command(interaction: discord.Interaction):
         return
 
     # Создаем выбор адвоката
-    options = [discord.SelectOption(label=f"{name} (Паспорт: {passport})",
-               value=str(passport)) for passport, name in lawyers]
+    options = [discord.SelectOption(label=f"{lawyer['name']} (Паспорт: {lawyer['passport']})",
+               value=str(lawyer['passport'])) for lawyer in lawyers]
     select = discord.ui.Select(placeholder="Выберите адвоката", options=options)
 
     # Создаем View для первого меню
@@ -3030,8 +2468,24 @@ class TicketModal(ui.Modal, title='Заявка'):
         data_embed.add_field(name="📝 Опишите, что у Вас случилось", value=self.description.value, inline=False)
         data_embed.add_field(name="📅 Укажите дату и промежуток времени случивш.", value=self.date.value, inline=False)
 
-        # Используем глобальный класс CloseTicketModal
-        await interaction.channel.delete(reason=f"Закрыто управляющим: {interaction.user}")
+        class CloseTicketModal(ui.Modal, title="Закрыть обращение"):
+            reason = ui.TextInput(
+                label="Причина",
+                style=discord.TextStyle.long,
+                placeholder="Причина для закрытия обращения, например, 'Решено')",
+                required=True,
+                max_length=1024
+            )
+
+            async def on_submit(self, interaction: discord.Interaction):
+                # Отправляем подтверждение
+                await interaction.response.send_message(
+                    f"Обращение закрыто по причине: {self.reason}",
+                    ephemeral=True
+                )
+
+                # Удаляем канал
+                await interaction.channel.delete(reason=f"Закрыто управляющим: {interaction.user}")
 
         class TicketButtons(discord.ui.View):
             def __init__(self, client_name: str):
@@ -3159,15 +2613,10 @@ class TicketModal(ui.Modal, title='Заявка'):
 
 async def send_ticket_embeds(channel):
     """Упрощённая версия функции с персистентными кнопками"""
-    if not channel:
-        print("❌ Канал не найден")
-        return
-
     try:
         await channel.purge(limit=None)
     except Exception as e:
         print(f"Ошибка очистки канала: {e}")
-        return
 
     # Первое сообщение с кнопкой
     embed1 = discord.Embed(
@@ -3401,7 +2850,24 @@ async def release_ticket(interaction: discord.Interaction):
             await interaction.followup.send("Вы не можете освободить этот тикет!", ephemeral=True)
             return
 
-        # Используем глобальный класс CloseTicketModal
+        class CloseTicketModal(ui.Modal, title="Закрыть обращение"):
+            reason = ui.TextInput(
+                label="Причина",
+                style=discord.TextStyle.long,
+                placeholder="Причина для закрытия обращения, например, 'Решено')",
+                required=True,
+                max_length=1024
+            )
+
+            async def on_submit(self, interaction: discord.Interaction):
+                # Отправляем подтверждение
+                await interaction.response.send_message(
+                    f"Обращение закрыто по причине: {self.reason}",
+                    ephemeral=True
+                )
+
+                # Удаляем канал
+                await interaction.channel.delete(reason=f"Закрыто управляющим: {interaction.user}")
 
         class TicketButtons(discord.ui.View):
             def __init__(self, client_name: str):
@@ -3606,7 +3072,7 @@ class PaymentConfirmButton(discord.ui.View):
     @discord.ui.button(label="Оплачено", style=discord.ButtonStyle.green, custom_id="persistent_confirm_lawyer_payment")
     async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Проверяем, что кнопку нажал управляющий
-        if interaction.user.id != 1068037217898995752:
+        if interaction.user.id != 719586288226926687:
             await interaction.response.send_message("❌ Только управляющий может подтвердить оплату!", ephemeral=True)
             return
 
@@ -3619,39 +3085,6 @@ class PaymentConfirmButton(discord.ui.View):
         # Удаляем кнопку и обновляем сообщение
         await interaction.message.edit(embed=embed, view=None)
         await interaction.response.send_message("✅ Оплата успешно подтверждена", ephemeral=True)
-
-class TipsButton(discord.ui.View):
-    def __init__(self, lawyer_passport: str):
-        super().__init__(timeout=None)
-        self.lawyer_passport = lawyer_passport
-
-    @discord.ui.button(label="Оставить чаевые", style=discord.ButtonStyle.green, emoji="💸", custom_id="give_tips")
-    async def give_tips(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Ищем информацию о канале в теге
-        review_channel = interaction.guild.get_channel(1392607447616720896)
-        review_channel_mention = f"<#{1392607447616720896}>" if review_channel else "#отзывы"
-
-        tips_embed = discord.Embed(
-            title="💸 Отправка чаевых",
-            description="Спасибо за желание отблагодарить адвоката!",
-            color=discord.Color.green()
-        )
-        tips_embed.add_field(
-            name="Счет для перевода",
-            value=f"```{self.lawyer_passport}```",
-            inline=False
-        )
-        tips_embed.add_field(
-            name="📝 Не забудьте оставить отзыв!",
-            value=f"Пожалуйста, оставьте отзыв о работе адвоката в канале {review_channel_mention}\nВаше мнение очень важно для нас!",
-            inline=False
-        )
-        tips_embed.set_footer(text="Чаевые - это отличный способ поблагодарить адвоката за качественную работу!")
-        
-        await interaction.response.send_message(
-            embed=tips_embed,
-            ephemeral=True
-        )
 
 @bot.tree.command(name="закончить_работу", description="Завершает работу по иску и перемещает в архив")
 @app_commands.describe(
@@ -3666,71 +3099,12 @@ async def finish_work(
     print(f"Начало выполнения команды закончить_работу для канала {interaction.channel.name}")
     
     # Отложим ответ сразу в начале
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     
     # Проверяем роль адвоката
     if not any(role.id == LAWYER_ROLE_ID for role in interaction.user.roles):
         await interaction.followup.send("❌ Только адвокаты могут использовать эту команду!", ephemeral=True)
         return
-
-    try:
-        # Получаем данные адвоката
-        lawyer_data = get_lawyer(str(interaction.user.id))
-        if not lawyer_data:
-            await interaction.followup.send("Ваши данные не найдены в базе данных адвокатов!", ephemeral=True)
-            return
-
-        # Получаем канал для выплат
-        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
-        if not log_channel:
-            await interaction.followup.send("Канал для логов не найден.", ephemeral=True)
-            return
-
-        # Создаем эмбед для выплаты
-        payment_embed = discord.Embed(
-            title="💰 Новый счет на выплату",
-            description="В связи с выполненной работой!",
-            color=discord.Color.blue()
-        )
-        
-        # Создаем ссылку на канал
-        channel_link = f"https://discord.com/channels/{interaction.guild.id}/{interaction.channel.id}"
-        
-        payment_embed.add_field(name="Обращение", value=claim_link, inline=False)
-        payment_embed.add_field(
-            name="Канал обращения", 
-            value=f"[#{interaction.channel.name}]({channel_link})", 
-            inline=False
-        )
-        payment_embed.add_field(
-            name="Адвокат, выполнявший работу", 
-            value=f"{interaction.user.mention} ({lawyer_data[1]})", 
-            inline=False
-        )
-        
-        # Отправляем эмбед в канал логов
-        await log_channel.send(embed=payment_embed, view=PaymentConfirmButton())
-
-        # Создаем эмбед для благодарности
-        thanks_embed = discord.Embed(
-            title="🙏 Благодарим за доверие!",
-            description=(
-                "Огромное спасибо Вам за доверие и обращение в наше бюро!\n\n"
-                "Не хотели бы вы оставить чаевые адвокату, который вам помог?"
-            ),
-            color=discord.Color.gold()
-        )
-
-        # Отправляем сообщение с благодарностью и кнопкой для чаевых
-        await interaction.channel.send(embed=thanks_embed, view=TipsButton(lawyer_data[0]))
-        
-        # Архивируем канал
-        await interaction.channel.edit(archived=True)
-        await interaction.followup.send("✅ Работа завершена, канал архивирован. Счет на выплату отправлен.", ephemeral=True)
-
-    except Exception as e:
-        print(f"Ошибка в команде 'закончить_работу': {e}")
-        await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
 
     try:
         # Получаем данные адвоката
@@ -3958,14 +3332,15 @@ async def finish_work(
                 print(f"Найден канал выплат: {payment_channel.name} (ID: {payment_channel.id})")
                 print(f"Отправляем информацию о выплате в канал {payment_channel.name}")
                 await payment_channel.send(
-                    content=f"<@1068037217898995752>",
+                    content=f"<@719586288226926687>",
                     embed=payment_embed,
                     view=PaymentConfirmButton()
                 )
 
         try:
             # Отправляем сообщение о начале архивации
-            await interaction.followup.send("⏳ Завершаю работу и архивирую канал...", ephemeral=True)
+            #await interaction.followup.send("⏳ Завершаю работу и архивирую канал...")
+            #ephemeral=True
 
             # Сохраняем фото
             photo_path = f"temp_photo_{interaction.channel.id}.png"
@@ -3987,10 +3362,12 @@ async def finish_work(
 
                 print(f"Канал успешно архивирован")
                 # Отправляем сообщение в сам канал
-                await interaction.channel.send("✅ Работа завершена, канал перемещен в архив")
+               #await interaction.channel.send("✅ Работа завершена, канал перемещен в архив")
+                #ephemeral=True
             else:
                 print(f"Не найдена категория архива")
                 await interaction.channel.send("⚠️ Не удалось переместить канал в архив")
+                ephemeral=True
 
         except Exception as e:
             print(f"Ошибка при архивации канала: {e}")
@@ -4171,7 +3548,24 @@ async def finish_work(
 
         await target_message.edit(view=view)
 
-    # Используем глобальный класс CloseTicketModal
+    class CloseTicketModal(ui.Modal, title="Закрыть обращение"):
+            reason = ui.TextInput(
+                label="Причина",
+                style=discord.TextStyle.long,
+                placeholder="Причина для закрытия обращения, например, 'Решено')",
+                required=True,
+                max_length=1024
+            )
+
+            async def on_submit(self, interaction: discord.Interaction):
+                # Отправляем подтверждение
+                await interaction.response.send_message(
+                    f"Обращение закрыто по причине: {self.reason}",
+                    ephemeral=True
+                )
+
+                # Удаляем канал
+                await interaction.channel.delete(reason=f"Закрыто управляющим: {interaction.user}")
 
     class TicketButtons(discord.ui.View):
             def __init__(self, client_name: str):
@@ -5031,10 +4425,6 @@ async def setup_call_channel(interaction: discord.Interaction):
     try:
         # Очищаем канал
         channel = interaction.guild.get_channel(CALL_CHANNEL_ID)
-        if not channel:
-            await interaction.followup.send("❌ Канал звонков не найден", ephemeral=True)
-            return
-            
         await channel.purge()
 
         # Создаем эмбед с инструкциями
@@ -5072,7 +4462,7 @@ async def on_message(message: discord.Message):
         return
 
     # Проверяем сообщения от управляющего для подтверждения платежей
-    if isinstance(message.channel, discord.DMChannel) and message.author.id == 1068037217898995752:
+    if isinstance(message.channel, discord.DMChannel) and message.author.id == 719586288226926687:
         await process_payment_screenshot(message)
         return
 
@@ -5308,35 +4698,8 @@ async def on_ready():
     # Обновляем эмбед
     await update_lawyers_embed(bot, guild)
 
-    channel = bot.get_channel(1408969018617888818)
-    if channel:
-        await send_ticket_embeds(channel)
-    else:
-        print("❌ Канал для тикетов не найден (ID: 1399117617905664060)")
-
-    # Инициализируем канал отзывов
-    review_channel = bot.get_channel(1392607447616720896)
-    if review_channel:
-        try:
-            # Проверяем, есть ли приветственное сообщение
-            async for message in review_channel.history(limit=1):
-                if message.author == bot.user and message.embeds and "Отзывы о работе адвокатов" in message.embeds[0].title:
-                    print("✅ Приветственное сообщение в канале отзывов уже существует")
-                    break
-            else:
-                # Отправляем приветственное сообщение только если его нет
-                embed = discord.Embed(
-                    title="💫 Отзывы о работе адвокатов",
-                    description="Здесь вы можете оставить свой отзыв о работе адвокатов бюро.\n\nКогда ваше обращение будет закрыто, вы получите уведомление с возможностью оставить отзыв.\n\nВаше мнение очень важно для нас!",
-                    color=discord.Color.blue()
-                )
-                embed.set_footer(text="PACT Attorney | Система отзывов")
-                await review_channel.send(embed=embed)
-                print("✅ Создано новое приветственное сообщение в канале отзывов")
-        except Exception as e:
-            print(f"Ошибка при инициализации канала отзывов: {e}")
-    else:
-        print("❌ Канал отзывов не найден (ID: 1392607447616720896)")
+    channel = bot.get_channel(1516302913205440512)
+    await send_ticket_embeds(channel)
 
     # Синхронизируем команды
     try:
@@ -5369,12 +4732,8 @@ async def update_clients_registry(bot):
         agreement, name, tag, lawyer, passport = row
         content_lines.append(f"**{agreement}** — {name} ({tag}) | Адвокат: {lawyer} | Паспорт: {passport}")
 
-    if not registry_channel:
-        print("❌ Канал реестра не найден")
-        return
-
     try:
         await registry_channel.purge(limit=10)
-        await registry_channel.send("\n".join(content_lines))
-    except Exception as e:
-        print(f"Ошибка обновления реестра: {e}")
+    except Exception:
+        pass
+    await registry_channel.send("\n".join(content_lines))
